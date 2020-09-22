@@ -68,7 +68,7 @@ public class AugmentedFaceRenderer {
 
   public AugmentedFaceRenderer() {}
 
-  public void createOnGlThread(Context context, String diffuseTextureAssetName) throws IOException {
+  public void createOnGlThread(Context context, String diffuseTextureAssetName, boolean fromFile) throws IOException {
     final int vertexShader =
         loadGLShader(TAG, context, GLES20.GL_VERTEX_SHADER, VERTEX_SHADER_NAME);
     final int fragmentShader =
@@ -95,15 +95,35 @@ public class AugmentedFaceRenderer {
 
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
     GLES20.glGenTextures(1, textureId, 0);
-    loadTexture(context, textureId, diffuseTextureAssetName);
+//    loadTextureFromAsset(context, textureId, diffuseTextureAssetName);
+    if(fromFile) {
+      loadTextureFromFile(context, textureId, diffuseTextureAssetName);
+    }else {
+      loadTextureFromAsset(context, textureId, diffuseTextureAssetName);
+    }
   }
 
-  private static void loadTexture(Context context, int[] textureId, String filename)
+  private static void loadTextureFromAsset(Context context, int[] textureId, String filename)
       throws IOException {
     Bitmap textureBitmap = BitmapFactory.decodeStream(context.getAssets().open(filename));
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId[0]);
     GLES20.glTexParameteri(
         GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, textureBitmap, 0);
+    GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+
+    textureBitmap.recycle();
+  }
+
+  private static void loadTextureFromFile(Context context, int[] textureId, String filename)
+          throws IOException {
+    BitmapFactory.Options bmOptions = new BitmapFactory.Options();
+    Bitmap textureBitmap = BitmapFactory.decodeFile(filename, bmOptions);
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId[0]);
+    GLES20.glTexParameteri(
+            GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
     GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, textureBitmap, 0);
     GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);

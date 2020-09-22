@@ -19,6 +19,8 @@
     package="com.google.ar.core.examples.java.augmentedfaces">
 
   <uses-permission android:name="android.permission.CAMERA"/>
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <!-- Limits app visibility in the Google Play Store to ARCore supported devices
        (https://developers.google.com/ar/discover/supported-devices). -->
   <uses-feature android:name="android.hardware.camera.ar" android:required="true"/>
@@ -30,6 +32,7 @@
       android:label="@string/app_name"
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="false"
+      android:requestLegacyExternalStorage="true"
       tools:ignore="GoogleAppIndexingWarning">
 
     <activity

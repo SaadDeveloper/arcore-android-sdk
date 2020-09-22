@@ -16,12 +16,35 @@
 
 package com.google.ar.core.examples.java.augmentedfaces;
 
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.media.ExifInterface;
+import android.net.Uri;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.Toast;
+
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.AugmentedFace;
 import com.google.ar.core.AugmentedFace.RegionType;
@@ -35,6 +58,7 @@ import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper;
 import com.google.ar.core.examples.java.common.helpers.DisplayRotationHelper;
 import com.google.ar.core.examples.java.common.helpers.FullScreenHelper;
 import com.google.ar.core.examples.java.common.helpers.SnackbarHelper;
+import com.google.ar.core.examples.java.common.helpers.StoragePermissionHelper;
 import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper;
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer;
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer;
@@ -44,11 +68,20 @@ import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
 import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException;
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException;
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException;
+
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.List;
+
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
+
+import static com.google.ar.core.examples.java.common.helpers.StoragePermissionHelper.STORAGE_PERMISSION_CODE;
 
 /**
  * This is a simple example that shows how to create an augmented reality (AR) application using the
@@ -56,279 +89,401 @@ import javax.microedition.khronos.opengles.GL10;
  * plane to place a 3d model of the Android robot.
  */
 public class AugmentedFacesActivity extends AppCompatActivity implements GLSurfaceView.Renderer {
-  private static final String TAG = AugmentedFacesActivity.class.getSimpleName();
+    private static final String TAG = AugmentedFacesActivity.class.getSimpleName();
 
-  // Rendering. The Renderers are created here, and initialized when the GL surface is created.
-  private GLSurfaceView surfaceView;
+    // Rendering. The Renderers are created here, and initialized when the GL surface is created.
+    private GLSurfaceView surfaceView;
+    private ImageView attach;
 
-  private boolean installRequested;
+    private boolean installRequested;
 
-  private Session session;
-  private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
-  private DisplayRotationHelper displayRotationHelper;
-  private final TrackingStateHelper trackingStateHelper = new TrackingStateHelper(this);
+    private Session session;
+    private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
+    private DisplayRotationHelper displayRotationHelper;
+    private final TrackingStateHelper trackingStateHelper = new TrackingStateHelper(this);
 
-  private final BackgroundRenderer backgroundRenderer = new BackgroundRenderer();
-  private final AugmentedFaceRenderer augmentedFaceRenderer = new AugmentedFaceRenderer();
-  private final ObjectRenderer noseObject = new ObjectRenderer();
-  private final ObjectRenderer rightEarObject = new ObjectRenderer();
-  private final ObjectRenderer leftEarObject = new ObjectRenderer();
-  // Temporary matrix allocated here to reduce number of allocations for each frame.
-  private final float[] noseMatrix = new float[16];
-  private final float[] rightEarMatrix = new float[16];
-  private final float[] leftEarMatrix = new float[16];
-  private static final float[] DEFAULT_COLOR = new float[] {0f, 0f, 0f, 0f};
+    private final BackgroundRenderer backgroundRenderer = new BackgroundRenderer();
+    private final AugmentedFaceRenderer augmentedFaceRenderer = new AugmentedFaceRenderer();
+    private final ObjectRenderer noseObject = new ObjectRenderer();
+    private final ObjectRenderer rightEarObject = new ObjectRenderer();
+    private final ObjectRenderer leftEarObject = new ObjectRenderer();
+    // Temporary matrix allocated here to reduce number of allocations for each frame.
+    private final float[] noseMatrix = new float[16];
+    private final float[] rightEarMatrix = new float[16];
+    private final float[] leftEarMatrix = new float[16];
+    private static final float[] DEFAULT_COLOR = new float[]{0f, 0f, 0f, 0f};
 
-  @Override
-  protected void onCreate(Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-    setContentView(R.layout.activity_main);
-    surfaceView = findViewById(R.id.surfaceview);
-    displayRotationHelper = new DisplayRotationHelper(/*context=*/ this);
+    private final int PIC_FROM_FILE = 2;
+    private Uri imageCaptureUri;
+    private SharedPreferences sharedPreferences;
+    private SharedPreferences.Editor editor;
+    private String imageSourcePath = null;
+    private static final float maxHeight = 1280.0f;
+    private static final float maxWidth = 1280.0f;
 
-    // Set up renderer.
-    surfaceView.setPreserveEGLContextOnPause(true);
-    surfaceView.setEGLContextClientVersion(2);
-    surfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0); // Alpha used for plane blending.
-    surfaceView.setRenderer(this);
-    surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
-    surfaceView.setWillNotDraw(false);
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
 
-    installRequested = false;
-  }
+        surfaceView = findViewById(R.id.surfaceview);
+        attach = findViewById(R.id.iv_attach);
+        checkForImage();
+        displayRotationHelper = new DisplayRotationHelper(/*context=*/ this);
 
-  @Override
-  protected void onDestroy() {
-    if (session != null) {
-      // Explicitly close ARCore Session to release native resources.
-      // Review the API reference for important considerations before calling close() in apps with
-      // more complicated lifecycle requirements:
-      // https://developers.google.com/ar/reference/java/arcore/reference/com/google/ar/core/Session#close()
-      session.close();
-      session = null;
+        // Set up renderer.
+        surfaceView.setPreserveEGLContextOnPause(true);
+        surfaceView.setEGLContextClientVersion(2);
+        surfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0); // Alpha used for plane blending.
+        surfaceView.setRenderer(this);
+        surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+        surfaceView.setWillNotDraw(false);
+
+        installRequested = false;
+
+        attach.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (StoragePermissionHelper.hasStoragePermission(AugmentedFacesActivity.this)) {
+                    getImageFromGallery();
+                } else {
+                    StoragePermissionHelper.requestStoragePermission(AugmentedFacesActivity.this);
+                }
+            }
+        });
     }
 
-    super.onDestroy();
-  }
+    private void checkForImage() {
+        sharedPreferences = getSharedPreferences("preferences", MODE_PRIVATE);
+        editor = sharedPreferences.edit();
+        if (sharedPreferences.getString("image", null) != null) {
+            imageSourcePath = sharedPreferences.getString("image", null);
+            editor.putString("image", null);
+            editor.apply();
+        }
+    }
 
-  @Override
-  protected void onResume() {
-    super.onResume();
+    @Override
+    protected void onDestroy() {
+        if (session != null) {
+            // Explicitly close ARCore Session to release native resources.
+            // Review the API reference for important considerations before calling close() in apps with
+            // more complicated lifecycle requirements:
+            // https://developers.google.com/ar/reference/java/arcore/reference/com/google/ar/core/Session#close()
+            session.close();
+            session = null;
+        }
 
-    if (session == null) {
-      Exception exception = null;
-      String message = null;
-      try {
-        switch (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
-          case INSTALL_REQUESTED:
-            installRequested = true;
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        if (session == null) {
+            Exception exception = null;
+            String message = null;
+            try {
+                switch (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
+                    case INSTALL_REQUESTED:
+                        installRequested = true;
+                        return;
+                    case INSTALLED:
+                        break;
+                }
+
+                // ARCore requires camera permissions to operate. If we did not yet obtain runtime
+                // permission on Android M and above, now is a good time to ask the user for it.
+                if (!CameraPermissionHelper.hasCameraPermission(this)) {
+                    CameraPermissionHelper.requestCameraPermission(this);
+                    return;
+                }
+
+                // Configure session to use front facing camera.
+                EnumSet<Session.Feature> featureSet = EnumSet.of(Session.Feature.FRONT_CAMERA);
+                // Create the session.
+                session = new Session(/* context= */ this, featureSet);
+                configureSession();
+
+            } catch (UnavailableArcoreNotInstalledException
+                    | UnavailableUserDeclinedInstallationException e) {
+                message = "Please install ARCore";
+                exception = e;
+            } catch (UnavailableApkTooOldException e) {
+                message = "Please update ARCore";
+                exception = e;
+            } catch (UnavailableSdkTooOldException e) {
+                message = "Please update this app";
+                exception = e;
+            } catch (UnavailableDeviceNotCompatibleException e) {
+                message = "This device does not support AR";
+                exception = e;
+            } catch (Exception e) {
+                message = "Failed to create AR session";
+                exception = e;
+            }
+
+            if (message != null) {
+                messageSnackbarHelper.showError(this, message);
+                Log.e(TAG, "Exception creating session", exception);
+                return;
+            }
+        }
+
+        // Note that order matters - see the note in onPause(), the reverse applies here.
+        try {
+            session.resume();
+        } catch (CameraNotAvailableException e) {
+            messageSnackbarHelper.showError(this, "Camera not available. Try restarting the app.");
+            session = null;
             return;
-          case INSTALLED:
-            break;
         }
 
-        // ARCore requires camera permissions to operate. If we did not yet obtain runtime
-        // permission on Android M and above, now is a good time to ask the user for it.
-        if (!CameraPermissionHelper.hasCameraPermission(this)) {
-          CameraPermissionHelper.requestCameraPermission(this);
-          return;
+        surfaceView.onResume();
+        displayRotationHelper.onResume();
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        if (session != null) {
+            // Note that the order matters - GLSurfaceView is paused first so that it does not try
+            // to query the session. If Session is paused before GLSurfaceView, GLSurfaceView may
+            // still call session.update() and get a SessionPausedException.
+            displayRotationHelper.onPause();
+            surfaceView.onPause();
+            session.pause();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if(requestCode == STORAGE_PERMISSION_CODE){
+          if(!StoragePermissionHelper.hasStoragePermission(this)){
+            Toast.makeText(this, "Storage permission is needed for this feature", Toast.LENGTH_LONG)
+                    .show();
+            if (!StoragePermissionHelper.shouldShowRequestPermissionRationale(this)) {
+              // Permission denied with checking "Do not ask again".
+              StoragePermissionHelper.launchPermissionSettings(this);
+            }
+          }
+        }else {
+          if (!CameraPermissionHelper.hasCameraPermission(this)) {
+            Toast.makeText(this, "Camera permission is needed to run this application", Toast.LENGTH_LONG)
+                    .show();
+            if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
+              // Permission denied with checking "Do not ask again".
+              CameraPermissionHelper.launchPermissionSettings(this);
+            }
+            finish();
+          }
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
+    }
+
+    @Override
+    public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+        GLES20.glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+
+        // Prepare the rendering objects. This involves reading shaders, so may throw an IOException.
+        try {
+            // Create the texture and pass it to ARCore session to be filled during update().
+            backgroundRenderer.createOnGlThread(/*context=*/ this);
+//      augmentedFaceRenderer.createOnGlThread(this, "models/freckles.png");
+//      augmentedFaceRenderer.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
+            if (imageSourcePath != null) {
+                augmentedFaceRenderer.createOnGlThread(this, imageSourcePath, true);
+            } else {
+                augmentedFaceRenderer.createOnGlThread(this, "models/freckles.png", false);
+            }
+          augmentedFaceRenderer.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
+
+
+            //noseObject.createOnGlThread(/*context=*/ this, "models/NOSE.obj", "models/nose_fur.png");
+            //noseObject.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
+            //noseObject.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending);
+            //rightEarObject.createOnGlThread(this, "models/FOREHEAD_RIGHT.obj", "models/ear_fur.png");
+            //rightEarObject.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
+            //rightEarObject.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending);
+            //leftEarObject.createOnGlThread(this, "models/FOREHEAD_LEFT.obj", "models/ear_fur.png");
+            //leftEarObject.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
+            //leftEarObject.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending);
+
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to read an asset file", e);
+        }
+    }
+
+    @Override
+    public void onSurfaceChanged(GL10 gl, int width, int height) {
+        displayRotationHelper.onSurfaceChanged(width, height);
+        GLES20.glViewport(0, 0, width, height);
+    }
+
+    @Override
+    public void onDrawFrame(GL10 gl) {
+        // Clear screen to notify driver it should not load any pixels from previous frame.
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+
+        if (session == null) {
+            return;
+        }
+        // Notify ARCore session that the view size changed so that the perspective matrix and
+        // the video background can be properly adjusted.
+        displayRotationHelper.updateSessionIfNeeded(session);
+
+        try {
+            session.setCameraTextureName(backgroundRenderer.getTextureId());
+
+            // Obtain the current frame from ARSession. When the configuration is set to
+            // UpdateMode.BLOCKING (it is by default), this will throttle the rendering to the
+            // camera framerate.
+            Frame frame = session.update();
+            Camera camera = frame.getCamera();
+
+            // Get projection matrix.
+            float[] projectionMatrix = new float[16];
+            camera.getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
+
+            // Get camera matrix and draw.
+            float[] viewMatrix = new float[16];
+            camera.getViewMatrix(viewMatrix, 0);
+
+            // Compute lighting from average intensity of the image.
+            // The first three components are color scaling factors.
+            // The last one is the average pixel intensity in gamma space.
+            final float[] colorCorrectionRgba = new float[4];
+            frame.getLightEstimate().getColorCorrection(colorCorrectionRgba, 0);
+
+            // If frame is ready, render camera preview image to the GL surface.
+            backgroundRenderer.draw(frame);
+
+            // Keep the screen unlocked while tracking, but allow it to lock when tracking stops.
+            trackingStateHelper.updateKeepScreenOnFlag(camera.getTrackingState());
+
+            Collection<AugmentedFace> faces = session.getAllTrackables(AugmentedFace.class);
+            for (AugmentedFace face : faces) {
+                if (face.getTrackingState() != TrackingState.TRACKING) {
+                    break;
+                }
+
+                float scaleFactor = 1.0f;
+
+                // Face objects use transparency so they must be rendered back to front without depth write.
+                GLES20.glDepthMask(false);
+
+                // Each face's region poses, mesh vertices, and mesh normals are updated every frame.
+
+                // 1. Render the face mesh first, behind any 3D objects attached to the face regions.
+                float[] modelMatrix = new float[16];
+                face.getCenterPose().toMatrix(modelMatrix, 0);
+                augmentedFaceRenderer.draw(
+                        projectionMatrix, viewMatrix, modelMatrix, colorCorrectionRgba, face);
+
+                // 2. Next, render the 3D objects attached to the forehead.
+                face.getRegionPose(RegionType.FOREHEAD_RIGHT).toMatrix(rightEarMatrix, 0);
+                rightEarObject.updateModelMatrix(rightEarMatrix, scaleFactor);
+                rightEarObject.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, DEFAULT_COLOR);
+
+                face.getRegionPose(RegionType.FOREHEAD_LEFT).toMatrix(leftEarMatrix, 0);
+                leftEarObject.updateModelMatrix(leftEarMatrix, scaleFactor);
+                leftEarObject.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, DEFAULT_COLOR);
+
+                // 3. Render the nose last so that it is not occluded by face mesh or by 3D objects attached
+                // to the forehead regions.
+                face.getRegionPose(RegionType.NOSE_TIP).toMatrix(noseMatrix, 0);
+                noseObject.updateModelMatrix(noseMatrix, scaleFactor);
+                noseObject.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, DEFAULT_COLOR);
+            }
+        } catch (Throwable t) {
+            // Avoid crashing the application due to unhandled exceptions.
+            Log.e(TAG, "Exception on the OpenGL thread", t);
+        } finally {
+            GLES20.glDepthMask(true);
+        }
+    }
+
+    private void configureSession() {
+        Config config = new Config(session);
+        config.setAugmentedFaceMode(AugmentedFaceMode.MESH3D);
+        session.configure(config);
+    }
+
+    private void getImageFromGallery() {
+        Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        intent.setType("image/*");
+        List<ResolveInfo> list = getApplicationContext().getPackageManager().queryIntentActivities(intent, 0);
+        for (int i = 0; i < list.size(); i++) {
+            ResolveInfo resolveInfo = list.get(i);
+            ActivityInfo activityInfo = resolveInfo.activityInfo;
+            if (activityInfo.packageName.contains("com.google.android.gallery") || activityInfo.packageName.contains("com.htc.album")
+                    || activityInfo.packageName.contains("android.gallery3d")) {
+                intent.setClassName(activityInfo.packageName, activityInfo.name);
+                break;
+            }
         }
 
-        // Configure session to use front facing camera.
-        EnumSet<Session.Feature> featureSet = EnumSet.of(Session.Feature.FRONT_CAMERA);
-        // Create the session.
-        session = new Session(/* context= */ this, featureSet);
-        configureSession();
-
-      } catch (UnavailableArcoreNotInstalledException
-          | UnavailableUserDeclinedInstallationException e) {
-        message = "Please install ARCore";
-        exception = e;
-      } catch (UnavailableApkTooOldException e) {
-        message = "Please update ARCore";
-        exception = e;
-      } catch (UnavailableSdkTooOldException e) {
-        message = "Please update this app";
-        exception = e;
-      } catch (UnavailableDeviceNotCompatibleException e) {
-        message = "This device does not support AR";
-        exception = e;
-      } catch (Exception e) {
-        message = "Failed to create AR session";
-        exception = e;
-      }
-
-      if (message != null) {
-        messageSnackbarHelper.showError(this, message);
-        Log.e(TAG, "Exception creating session", exception);
-        return;
-      }
+        startActivityForResult(intent, PIC_FROM_FILE);
     }
 
-    // Note that order matters - see the note in onPause(), the reverse applies here.
-    try {
-      session.resume();
-    } catch (CameraNotAvailableException e) {
-      messageSnackbarHelper.showError(this, "Camera not available. Try restarting the app.");
-      session = null;
-      return;
+    private void restartActivity() {
+        editor.putString("image", imageSourcePath);
+        editor.apply();
+        Intent intent = getIntent();
+        finish();
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        startActivity(intent);
     }
 
-    surfaceView.onResume();
-    displayRotationHelper.onResume();
-  }
-
-  @Override
-  public void onPause() {
-    super.onPause();
-    if (session != null) {
-      // Note that the order matters - GLSurfaceView is paused first so that it does not try
-      // to query the session. If Session is paused before GLSurfaceView, GLSurfaceView may
-      // still call session.update() and get a SessionPausedException.
-      displayRotationHelper.onPause();
-      surfaceView.onPause();
-      session.pause();
-    }
-  }
-
-  @Override
-  public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
-    super.onRequestPermissionsResult(requestCode, permissions, results);
-    if (!CameraPermissionHelper.hasCameraPermission(this)) {
-      Toast.makeText(this, "Camera permission is needed to run this application", Toast.LENGTH_LONG)
-          .show();
-      if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
-        // Permission denied with checking "Do not ask again".
-        CameraPermissionHelper.launchPermissionSettings(this);
-      }
-      finish();
-    }
-  }
-
-  @Override
-  public void onWindowFocusChanged(boolean hasFocus) {
-    super.onWindowFocusChanged(hasFocus);
-    FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
-  }
-
-  @Override
-  public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-    GLES20.glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-
-    // Prepare the rendering objects. This involves reading shaders, so may throw an IOException.
-    try {
-      // Create the texture and pass it to ARCore session to be filled during update().
-      backgroundRenderer.createOnGlThread(/*context=*/ this);
-      augmentedFaceRenderer.createOnGlThread(this, "models/freckles.png");
-      augmentedFaceRenderer.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
-      
-      //noseObject.createOnGlThread(/*context=*/ this, "models/NOSE.obj", "models/nose_fur.png");
-      //noseObject.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
-      //noseObject.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending);
-      //rightEarObject.createOnGlThread(this, "models/FOREHEAD_RIGHT.obj", "models/ear_fur.png");
-      //rightEarObject.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
-      //rightEarObject.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending);
-      //leftEarObject.createOnGlThread(this, "models/FOREHEAD_LEFT.obj", "models/ear_fur.png");
-      //leftEarObject.setMaterialProperties(0.0f, 1.0f, 0.1f, 6.0f);
-      //leftEarObject.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending);
-
-    } catch (IOException e) {
-      Log.e(TAG, "Failed to read an asset file", e);
-    }
-  }
-
-  @Override
-  public void onSurfaceChanged(GL10 gl, int width, int height) {
-    displayRotationHelper.onSurfaceChanged(width, height);
-    GLES20.glViewport(0, 0, width, height);
-  }
-
-  @Override
-  public void onDrawFrame(GL10 gl) {
-    // Clear screen to notify driver it should not load any pixels from previous frame.
-    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
-
-    if (session == null) {
-      return;
-    }
-    // Notify ARCore session that the view size changed so that the perspective matrix and
-    // the video background can be properly adjusted.
-    displayRotationHelper.updateSessionIfNeeded(session);
-
-    try {
-      session.setCameraTextureName(backgroundRenderer.getTextureId());
-
-      // Obtain the current frame from ARSession. When the configuration is set to
-      // UpdateMode.BLOCKING (it is by default), this will throttle the rendering to the
-      // camera framerate.
-      Frame frame = session.update();
-      Camera camera = frame.getCamera();
-
-      // Get projection matrix.
-      float[] projectionMatrix = new float[16];
-      camera.getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f);
-
-      // Get camera matrix and draw.
-      float[] viewMatrix = new float[16];
-      camera.getViewMatrix(viewMatrix, 0);
-
-      // Compute lighting from average intensity of the image.
-      // The first three components are color scaling factors.
-      // The last one is the average pixel intensity in gamma space.
-      final float[] colorCorrectionRgba = new float[4];
-      frame.getLightEstimate().getColorCorrection(colorCorrectionRgba, 0);
-
-      // If frame is ready, render camera preview image to the GL surface.
-      backgroundRenderer.draw(frame);
-
-      // Keep the screen unlocked while tracking, but allow it to lock when tracking stops.
-      trackingStateHelper.updateKeepScreenOnFlag(camera.getTrackingState());
-
-      Collection<AugmentedFace> faces = session.getAllTrackables(AugmentedFace.class);
-      for (AugmentedFace face : faces) {
-        if (face.getTrackingState() != TrackingState.TRACKING) {
-          break;
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        try {
+            if (requestCode == PIC_FROM_FILE) {
+                checkImageUri(data);
+                restartActivity();
+            }
+        } catch (NullPointerException exception) {
+            exception.printStackTrace();
         }
-
-        float scaleFactor = 1.0f;
-
-        // Face objects use transparency so they must be rendered back to front without depth write.
-        GLES20.glDepthMask(false);
-
-        // Each face's region poses, mesh vertices, and mesh normals are updated every frame.
-
-        // 1. Render the face mesh first, behind any 3D objects attached to the face regions.
-        float[] modelMatrix = new float[16];
-        face.getCenterPose().toMatrix(modelMatrix, 0);
-        augmentedFaceRenderer.draw(
-            projectionMatrix, viewMatrix, modelMatrix, colorCorrectionRgba, face);
-
-        // 2. Next, render the 3D objects attached to the forehead.
-        face.getRegionPose(RegionType.FOREHEAD_RIGHT).toMatrix(rightEarMatrix, 0);
-        rightEarObject.updateModelMatrix(rightEarMatrix, scaleFactor);
-        rightEarObject.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, DEFAULT_COLOR);
-
-        face.getRegionPose(RegionType.FOREHEAD_LEFT).toMatrix(leftEarMatrix, 0);
-        leftEarObject.updateModelMatrix(leftEarMatrix, scaleFactor);
-        leftEarObject.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, DEFAULT_COLOR);
-
-        // 3. Render the nose last so that it is not occluded by face mesh or by 3D objects attached
-        // to the forehead regions.
-        face.getRegionPose(RegionType.NOSE_TIP).toMatrix(noseMatrix, 0);
-        noseObject.updateModelMatrix(noseMatrix, scaleFactor);
-        noseObject.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, DEFAULT_COLOR);
-      }
-    } catch (Throwable t) {
-      // Avoid crashing the application due to unhandled exceptions.
-      Log.e(TAG, "Exception on the OpenGL thread", t);
-    } finally {
-      GLES20.glDepthMask(true);
     }
-  }
 
-  private void configureSession() {
-    Config config = new Config(session);
-    config.setAugmentedFaceMode(AugmentedFaceMode.MESH3D);
-    session.configure(config);
-  }
+    private void checkImageUri(Intent data) {
+        Uri mImageCaptureUri = data.getData();
+        String mImagePath = getRealPathFromURI(mImageCaptureUri.toString());
+        if (mImagePath != null) {
+            this.imageCaptureUri = mImageCaptureUri;
+            this.imageSourcePath = mImagePath;
+        } else {
+            this.imageCaptureUri = null;
+            this.imageSourcePath = null;
+
+        }
+    }
+
+    private String getRealPathFromURI(String path) {
+
+        Cursor cursor;
+        if (path.contains("content://")) {
+
+            Uri contentUri = Uri.parse(path);
+
+            String[] proj = {MediaStore.Video.Media._ID, MediaStore.Video.Media.DATA};
+            cursor = ((Activity) this).managedQuery(contentUri, proj, null, null, null);
+
+            int column_index = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA);
+            cursor.moveToFirst();
+            return cursor.getString(column_index);
+
+        } else {
+            return path;
+        }
+    }
 }
